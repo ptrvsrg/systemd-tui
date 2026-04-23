@@ -1,0 +1,12 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG TARGETOS=linux
+ARG TARGETARCH
+
+COPY ${TARGETOS}/${TARGETARCH}/systemd-tui /usr/local/bin/systemd-tui
+
+ENTRYPOINT ["/usr/local/bin/systemd-tui"]

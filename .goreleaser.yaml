@@ -1,0 +1,109 @@
+version: 2
+
+project_name: systemd-tui
+
+before:
+  hooks:
+    - rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-gnu
+
+builds:
+  - id: systemd-tui
+    builder: rust
+    binary: systemd-tui
+    command: zigbuild
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      - x86_64-pc-windows-gnu
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+    flags:
+      - --release
+
+archives:
+  - id: default
+    ids:
+      - systemd-tui
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+dockers_v2:
+  - id: docker-images
+    ids:
+      - systemd-tui
+    dockerfile: Dockerfile.goreleaser
+    images:
+      - "ghcr.io/ptrvsrg/systemd-tui"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+
+nfpms:
+  - id: linux-packages
+    package_name: systemd-tui
+    file_name_template: "{{ .ConventionalFileName }}"
+    ids:
+      - systemd-tui
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    description: Interactive TUI for systemd over D-Bus.
+    license: Apache-2.0
+    maintainer: ptrvsrg
+    homepage: https://github.com/ptrvsrg/systemd-tui
+
+snapcrafts:
+  - id: systemd-tui
+    ids:
+      - systemd-tui
+    name: systemd-tui
+    summary: Interactive systemd terminal UI
+    description: Interactive TUI utility for managing systemd units over D-Bus.
+    grade: stable
+    confinement: classic
+    license: Apache-2.0
+    publish: false
+    apps:
+      systemd-tui:
+        command: systemd-tui
+
+homebrew_casks:
+  - repository:
+      owner: ptrvsrg
+      name: systemd-tui
+    name: systemd-tui
+    ids:
+      - default
+    binaries:
+      - systemd-tui
+    homepage: https://github.com/ptrvsrg/systemd-tui
+    description: Interactive TUI for systemd over D-Bus
+    license: Apache-2.0
+
+sboms:
+  - id: archive
+    artifacts: archive
+  - id: package
+    artifacts: package
+  - id: source
+    artifacts: source
+
+changelog:
+  use: git
+  sort: asc

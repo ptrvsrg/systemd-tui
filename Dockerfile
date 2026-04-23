@@ -1,0 +1,17 @@
+FROM rust:1-bookworm AS builder
+WORKDIR /workspace
+
+COPY Cargo.toml ./
+COPY src ./src
+
+RUN cargo build --release
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /workspace/target/release/systemd-tui /usr/local/bin/systemd-tui
+
+ENTRYPOINT ["/usr/local/bin/systemd-tui"]
