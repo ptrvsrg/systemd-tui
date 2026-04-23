@@ -16,7 +16,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, table_state: &mut TableState) {
             Constraint::Length(5),
             Constraint::Length(5),
         ])
-        .split(frame.size());
+        .split(frame.area());
 
     let title = Paragraph::new(format!(
         " systemd-tui  conn:{}  units:{}  state:{}  filter:{}{} ",
@@ -87,7 +87,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, table_state: &mut TableState) {
 }
 
 fn draw_help_popup(frame: &mut Frame<'_>, app: &App) {
-    let area = centered_rect(72, 70, frame.size());
+    let area = centered_rect(72, 70, frame.area());
     frame.render_widget(Clear, area);
 
     let lines = [
