@@ -49,7 +49,7 @@ pub fn units_table(app: &App, state: &mut TableState, focused: bool) -> Table<'s
             block
         }
     })
-    .highlight_style(
+    .row_highlight_style(
         Style::default()
             .add_modifier(Modifier::REVERSED)
             .add_modifier(Modifier::BOLD),
