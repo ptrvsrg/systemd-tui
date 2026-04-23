@@ -86,7 +86,7 @@ snapcrafts:
 homebrew_casks:
   - repository:
       owner: ptrvsrg
-      name: homebrew-tap
+      name: systemd-tui
     name: systemd-tui
     ids:
       - default
