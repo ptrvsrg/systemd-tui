@@ -14,4 +14,4 @@ ratatui = "0.26"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 unicode-width = "0.2"
-zbus = { version = "4", features = ["tokio"] }
+zbus = { version = "5", features = ["tokio"] }
