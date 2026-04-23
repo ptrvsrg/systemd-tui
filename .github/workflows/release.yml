@@ -38,6 +38,22 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.1
       - name: Setup Zig
         uses: mlugg/setup-zig@v2.2.1
+      - name: Setup macOS SDK for cross-compilation
+        run: |
+          set -euo pipefail
+
+          SDK_VERSION="14.5"
+          SDK_ARCHIVE="MacOSX${SDK_VERSION}.sdk.tar.xz"
+          SDK_URL="https://github.com/joseluisq/macosx-sdks/releases/download/${SDK_VERSION}/${SDK_ARCHIVE}"
+          SDK_ROOT="${HOME}/MacOSX${SDK_VERSION}.sdk"
+
+          if [ ! -d "${SDK_ROOT}" ]; then
+            curl -fsSL "${SDK_URL}" -o "${RUNNER_TEMP}/${SDK_ARCHIVE}"
+            tar -xJf "${RUNNER_TEMP}/${SDK_ARCHIVE}" -C "${HOME}"
+          fi
+
+          echo "SDKROOT=${SDK_ROOT}" >> "${GITHUB_ENV}"
+          echo "MACOSX_DEPLOYMENT_TARGET=10.12" >> "${GITHUB_ENV}"
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
       - name: Setup syft
