@@ -68,57 +68,80 @@ impl SshTunnel {
         remote_socket: &str,
         connect_timeout: Duration,
     ) -> Result<Self> {
-        let local_port = reserve_local_port()?;
         let destination = match &config.user {
             Some(user) => format!("{user}@{}", config.host),
             None => config.host.clone(),
         };
-        let forward_spec = format!("{local_port}:{remote_socket}");
-
-        let mut cmd = Command::new("ssh");
-        cmd.arg("-N")
-            .arg("-o")
-            .arg("ExitOnForwardFailure=yes")
-            .arg("-o")
-            .arg("ServerAliveInterval=30")
-            .arg("-o")
-            .arg("ServerAliveCountMax=3")
-            .arg("-p")
-            .arg(config.port.to_string());
-        if let Some(key_path) = &config.key_path {
-            cmd.arg("-i").arg(key_path);
-        }
-        cmd.arg("-L")
-            .arg(forward_spec)
-            .arg(destination)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        let mut child = cmd.spawn().context("failed to spawn ssh process")?;
-
         let deadline = Instant::now() + connect_timeout;
+        let mut last_early_exit = None;
+
         loop {
-            if let Some(status) = child
-                .try_wait()
-                .context("failed to check ssh process state")?
-            {
-                bail!("ssh tunnel exited early with status: {status}");
-            }
-
-            if TcpStream::connect(("127.0.0.1", local_port)).await.is_ok() {
-                break;
-            }
-
             if Instant::now() >= deadline {
-                child.start_kill().ok();
-                bail!("timeout waiting for ssh tunnel to be ready");
+                match last_early_exit {
+                    Some(status) => {
+                        bail!(
+                            "timeout waiting for ssh tunnel to be ready; last ssh exit status: {status}"
+                        )
+                    }
+                    None => bail!("timeout waiting for ssh tunnel to be ready"),
+                }
             }
 
-            sleep(Duration::from_millis(75)).await;
-        }
+            let local_port = reserve_local_port()?;
+            let forward_spec = format!("{local_port}:{remote_socket}");
 
-        Ok(Self { child, local_port })
+            let mut cmd = Command::new("ssh");
+            cmd.arg("-N")
+                .arg("-o")
+                .arg("ExitOnForwardFailure=yes")
+                .arg("-o")
+                .arg("ServerAliveInterval=30")
+                .arg("-o")
+                .arg("ServerAliveCountMax=3")
+                .arg("-p")
+                .arg(config.port.to_string());
+            if let Some(key_path) = &config.key_path {
+                cmd.arg("-i").arg(key_path);
+            }
+            cmd.arg("-L")
+                .arg(forward_spec)
+                .arg(&destination)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+
+            let mut child = cmd.spawn().context("failed to spawn ssh process")?;
+
+            loop {
+                if let Some(status) = child
+                    .try_wait()
+                    .context("failed to check ssh process state")?
+                {
+                    last_early_exit = Some(status);
+                    break;
+                }
+
+                if TcpStream::connect(("127.0.0.1", local_port)).await.is_ok() {
+                    return Ok(Self { child, local_port });
+                }
+
+                if Instant::now() >= deadline {
+                    child.start_kill().ok();
+                    match last_early_exit {
+                        Some(status) => {
+                            bail!(
+                                "timeout waiting for ssh tunnel to be ready; last ssh exit status: {status}"
+                            )
+                        }
+                        None => bail!("timeout waiting for ssh tunnel to be ready"),
+                    }
+                }
+
+                sleep(Duration::from_millis(75)).await;
+            }
+
+            sleep(Duration::from_millis(50)).await;
+        }
     }
 
     pub fn dbus_tcp_address(&self) -> String {
