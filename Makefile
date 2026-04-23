@@ -98,7 +98,6 @@ release/deps-snapcraft: ## Ensure snapcraft is installed.
 	@command -v snapcraft >/dev/null 2>&1 || { \
 		echo "snapcraft is required by GoReleaser (snapcrafts section)."; \
 		echo "Install it manually (e.g. brew install snapcraft or sudo snap install snapcraft --classic)."; \
-		echo "Or run with SNAPCRAFT_AUTO_INSTALL=1 make release/deps to auto-install via Homebrew."; \
 		exit 1; \
 	}
 
