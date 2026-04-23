@@ -89,10 +89,17 @@ impl SystemdManager {
             .ssh
             .as_ref()
             .context("missing SSH config for ssh connection mode")?;
-        let socket_path = config
-            .dbus_socket
-            .as_deref()
-            .unwrap_or("/var/run/dbus/system_bus_socket");
+        let socket_path = match config.dbus_socket.as_deref() {
+            Some(socket_path) => socket_path,
+            None => match bus_kind {
+                BusKind::System => "/var/run/dbus/system_bus_socket",
+                BusKind::Session => {
+                    return Err(anyhow::anyhow!(
+                        "remote session bus over ssh requires an explicit dbus socket path; pass --dbus-socket (for example /run/user/<uid>/bus)"
+                    ));
+                }
+            },
+        };
         let ssh_tunnel = SshTunnel::open(ssh_config, socket_path, config.connect_timeout).await?;
         let dbus_address = ssh_tunnel.dbus_tcp_address();
         let conn = tokio::time::timeout(
