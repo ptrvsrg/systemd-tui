@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 
 pub struct App {
     manager: SystemdManager,
-    signal_rx: mpsc::UnboundedReceiver<ManagerSignal>,
+    signal_rx: mpsc::Receiver<ManagerSignal>,
     pub config: Config,
     pub units: Vec<SystemdUnit>,
     filtered_indices: Vec<usize>,
@@ -258,9 +258,18 @@ impl App {
     }
 
     async fn refresh_units(&mut self) -> Result<()> {
+        let selected_name = self.selected_unit().map(|unit| unit.name.clone());
         self.units = self.manager.list_units().await?;
         self.units.sort_by(|a, b| a.name.cmp(&b.name));
         self.rebuild_filtered_indices();
+        if let Some(name) = selected_name {
+            self.selected = Self::restore_selected_index_for_name(
+                &self.units,
+                &self.filtered_indices,
+                &name,
+                self.selected,
+            );
+        }
         self.last_refresh = Instant::now();
         self.status = format!("updated at {}", chrono::Local::now().format("%H:%M:%S"));
         Ok(())
@@ -292,7 +301,9 @@ impl App {
                 self.scroll_focused_bottom();
             }
             KeyCode::Char('r') => {
-                self.refresh_units().await?;
+                if let Err(err) = self.refresh_units().await {
+                    self.status = format!("refresh error: {err}");
+                }
             }
             KeyCode::Char('/') => {
                 self.filter_input_mode = true;
@@ -306,38 +317,62 @@ impl App {
             KeyCode::Char('s') => {
                 let selected = self.selected_unit().cloned();
                 if let Some(unit_name) = selected.as_ref().map(|u| u.name.clone()) {
-                    execute(&self.manager, selected.as_ref(), UnitAction::Start).await?;
-                    self.status = format!("start requested for {unit_name}");
-                    self.refresh_units().await?;
+                    self.run_unit_action(selected.as_ref(), UnitAction::Start, "start", &unit_name)
+                        .await;
                 }
             }
             KeyCode::Char('t') => {
                 let selected = self.selected_unit().cloned();
                 if let Some(unit_name) = selected.as_ref().map(|u| u.name.clone()) {
-                    execute(&self.manager, selected.as_ref(), UnitAction::Stop).await?;
-                    self.status = format!("stop requested for {unit_name}");
-                    self.refresh_units().await?;
+                    self.run_unit_action(selected.as_ref(), UnitAction::Stop, "stop", &unit_name)
+                        .await;
                 }
             }
             KeyCode::Char('R') => {
                 let selected = self.selected_unit().cloned();
                 if let Some(unit_name) = selected.as_ref().map(|u| u.name.clone()) {
-                    execute(&self.manager, selected.as_ref(), UnitAction::Restart).await?;
-                    self.status = format!("restart requested for {unit_name}");
-                    self.refresh_units().await?;
+                    self.run_unit_action(
+                        selected.as_ref(),
+                        UnitAction::Restart,
+                        "restart",
+                        &unit_name,
+                    )
+                    .await;
                 }
             }
             KeyCode::Char('L') => {
                 let selected = self.selected_unit().cloned();
                 if let Some(unit_name) = selected.as_ref().map(|u| u.name.clone()) {
-                    execute(&self.manager, selected.as_ref(), UnitAction::Reload).await?;
-                    self.status = format!("reload requested for {unit_name}");
-                    self.refresh_units().await?;
+                    self.run_unit_action(
+                        selected.as_ref(),
+                        UnitAction::Reload,
+                        "reload",
+                        &unit_name,
+                    )
+                    .await;
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    async fn run_unit_action(
+        &mut self,
+        selected: Option<&SystemdUnit>,
+        action: UnitAction,
+        action_label: &str,
+        unit_name: &str,
+    ) {
+        if let Err(err) = execute(&self.manager, selected, action).await {
+            self.status = format!("{action_label} failed for {unit_name}: {err}");
+            return;
+        }
+
+        self.status = format!("{action_label} requested for {unit_name}");
+        if let Err(err) = self.refresh_units().await {
+            self.status = format!("post-{action_label} refresh error: {err}");
+        }
     }
 
     fn on_help_key(&mut self, key: KeyCode) -> Result<()> {
@@ -388,34 +423,63 @@ impl App {
     }
 
     fn rebuild_filtered_indices(&mut self) {
-        let needle = self.name_filter.to_lowercase();
-        self.filtered_indices = self
-            .units
-            .iter()
-            .enumerate()
-            .filter(|(_, unit)| {
-                self.matches_state_filter(unit)
-                    && (needle.is_empty()
-                        || unit.name.to_lowercase().contains(&needle)
-                        || unit.description.to_lowercase().contains(&needle))
-            })
-            .map(|(idx, _)| idx)
-            .collect();
-
-        if self.filtered_indices.is_empty() {
-            self.selected = 0;
-        } else if self.selected >= self.filtered_indices.len() {
-            self.selected = self.filtered_indices.len() - 1;
-        }
+        self.filtered_indices =
+            Self::rebuild_filtered_indices_for(&self.units, &self.name_filter, self.state_filter);
+        self.selected = Self::clamp_selected(self.selected, self.filtered_indices.len());
     }
 
-    fn matches_state_filter(&self, unit: &SystemdUnit) -> bool {
-        match self.state_filter {
+    fn matches_state_filter_for(state_filter: StateFilter, unit: &SystemdUnit) -> bool {
+        match state_filter {
             StateFilter::All => true,
             StateFilter::Active => unit.active_state.as_str() == "active",
             StateFilter::Inactive => unit.active_state.as_str() == "inactive",
             StateFilter::Failed => unit.active_state.as_str() == "failed",
         }
+    }
+
+    fn rebuild_filtered_indices_for(
+        units: &[SystemdUnit],
+        name_filter: &str,
+        state_filter: StateFilter,
+    ) -> Vec<usize> {
+        let needle = name_filter.to_lowercase();
+        units
+            .iter()
+            .enumerate()
+            .filter(|(_, unit)| {
+                Self::matches_state_filter_for(state_filter, unit)
+                    && (needle.is_empty()
+                        || unit.name.to_lowercase().contains(&needle)
+                        || unit.description.to_lowercase().contains(&needle))
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    fn clamp_selected(selected: usize, visible_len: usize) -> usize {
+        if visible_len == 0 {
+            0
+        } else {
+            selected.min(visible_len - 1)
+        }
+    }
+
+    fn restore_selected_index_for_name(
+        units: &[SystemdUnit],
+        filtered_indices: &[usize],
+        selected_name: &str,
+        fallback_selected: usize,
+    ) -> usize {
+        filtered_indices
+            .iter()
+            .enumerate()
+            .find_map(|(visible_idx, unit_idx)| {
+                units
+                    .get(*unit_idx)
+                    .filter(|unit| unit.name == selected_name)
+                    .map(|_| visible_idx)
+            })
+            .unwrap_or_else(|| Self::clamp_selected(fallback_selected, filtered_indices.len()))
     }
 
     fn scroll_focused_down(&mut self, amount: usize) {
@@ -473,7 +537,21 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{FocusBlock, StateFilter};
+    use super::{App, FocusBlock, StateFilter};
+    use crate::units::SystemdUnit;
+    use crate::units::structs::{UnitActiveState, UnitLoadState};
+
+    fn unit(name: &str, description: &str, active_state: UnitActiveState) -> SystemdUnit {
+        SystemdUnit {
+            name: name.to_string(),
+            description: description.to_string(),
+            load_state: UnitLoadState::Loaded,
+            active_state,
+            sub_state: "running".to_string(),
+            follows: String::new(),
+            path: format!("/org/freedesktop/systemd1/unit/{}", name.replace('.', "_")),
+        }
+    }
 
     #[test]
     fn state_filter_cycle_roundtrip() {
@@ -500,5 +578,87 @@ mod tests {
         assert_eq!(FocusBlock::Units.prev(), FocusBlock::Status);
         assert_eq!(FocusBlock::Status.prev(), FocusBlock::Details);
         assert_eq!(FocusBlock::Details.prev(), FocusBlock::Units);
+    }
+
+    #[test]
+    fn matches_state_filter_variants() {
+        let active = unit("active.service", "Active unit", UnitActiveState::Active);
+        let inactive = unit(
+            "inactive.service",
+            "Inactive unit",
+            UnitActiveState::Inactive,
+        );
+        let failed = unit("failed.service", "Failed unit", UnitActiveState::Failed);
+
+        assert!(App::matches_state_filter_for(StateFilter::All, &active));
+        assert!(App::matches_state_filter_for(StateFilter::Active, &active));
+        assert!(!App::matches_state_filter_for(
+            StateFilter::Active,
+            &inactive
+        ));
+        assert!(App::matches_state_filter_for(
+            StateFilter::Inactive,
+            &inactive
+        ));
+        assert!(!App::matches_state_filter_for(
+            StateFilter::Inactive,
+            &failed
+        ));
+        assert!(App::matches_state_filter_for(StateFilter::Failed, &failed));
+        assert!(!App::matches_state_filter_for(StateFilter::Failed, &active));
+    }
+
+    #[test]
+    fn rebuild_filtered_indices_case_insensitive_and_combined_with_state_filter() {
+        let units = vec![
+            unit("sshd.service", "OpenSSH Daemon", UnitActiveState::Active),
+            unit("db.service", "Database", UnitActiveState::Inactive),
+            unit("logger.service", "audit daemon", UnitActiveState::Failed),
+        ];
+
+        let all_daemon = App::rebuild_filtered_indices_for(&units, "DAEMON", StateFilter::All);
+        assert_eq!(all_daemon, vec![0, 2]);
+
+        let active_daemon =
+            App::rebuild_filtered_indices_for(&units, "daemon", StateFilter::Active);
+        assert_eq!(active_daemon, vec![0]);
+
+        let failed_daemon =
+            App::rebuild_filtered_indices_for(&units, "dAeMoN", StateFilter::Failed);
+        assert_eq!(failed_daemon, vec![2]);
+    }
+
+    #[test]
+    fn clamp_selected_when_visible_set_shrinks() {
+        assert_eq!(App::clamp_selected(5, 3), 2);
+        assert_eq!(App::clamp_selected(1, 3), 1);
+        assert_eq!(App::clamp_selected(4, 0), 0);
+    }
+
+    #[test]
+    fn restore_selected_index_for_name_prefers_same_unit_after_refresh() {
+        let units = vec![
+            unit("a.service", "A", UnitActiveState::Active),
+            unit("b.service", "B", UnitActiveState::Active),
+            unit("c.service", "C", UnitActiveState::Active),
+        ];
+        let filtered_indices = vec![0, 1, 2];
+
+        let selected =
+            App::restore_selected_index_for_name(&units, &filtered_indices, "b.service", 0);
+        assert_eq!(selected, 1);
+    }
+
+    #[test]
+    fn restore_selected_index_for_name_falls_back_to_clamped_index() {
+        let units = vec![
+            unit("a.service", "A", UnitActiveState::Active),
+            unit("c.service", "C", UnitActiveState::Active),
+        ];
+        let filtered_indices = vec![0, 1];
+
+        let selected =
+            App::restore_selected_index_for_name(&units, &filtered_indices, "missing.service", 3);
+        assert_eq!(selected, 1);
     }
 }

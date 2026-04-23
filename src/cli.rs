@@ -56,10 +56,9 @@ pub struct Cli {
     #[arg(
         long,
         env = "SYSTEMD_TUI_DBUS_SOCKET",
-        default_value = "/var/run/dbus/system_bus_socket",
-        help = "DBus unix socket path (used for local custom socket and as remote socket with SSH tunneling)"
+        help = "DBus unix socket path override (applies to local and SSH connections when set)"
     )]
-    pub dbus_socket: String,
+    pub dbus_socket: Option<String>,
 }
 
 #[cfg(test)]
@@ -73,7 +72,7 @@ mod tests {
         assert_eq!(cli.refresh_ms, 2000);
         assert!(matches!(cli.bus, CliBusSelection::Auto));
         assert!(cli.ssh_host.is_none());
-        assert_eq!(cli.dbus_socket, "/var/run/dbus/system_bus_socket");
+        assert!(cli.dbus_socket.is_none());
     }
 
     #[test]
@@ -95,6 +94,9 @@ mod tests {
         assert_eq!(cli.ssh_host.as_deref(), Some("srv.example"));
         assert_eq!(cli.ssh_user.as_deref(), Some("root"));
         assert_eq!(cli.ssh_port, 2222);
-        assert_eq!(cli.dbus_socket, "/var/run/dbus/system_bus_socket");
+        assert_eq!(
+            cli.dbus_socket.as_deref(),
+            Some("/var/run/dbus/system_bus_socket")
+        );
     }
 }

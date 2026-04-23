@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use zbus::zvariant::OwnedObjectPath;
 use zbus::{Connection, ConnectionBuilder};
 
@@ -230,8 +231,13 @@ impl SystemdManager {
         Ok(())
     }
 
-    pub async fn subscribe_unit_signals(&self) -> Result<mpsc::UnboundedReceiver<ManagerSignal>> {
+    pub async fn subscribe_unit_signals(&self) -> Result<mpsc::Receiver<ManagerSignal>> {
         let proxy = self.proxy().await?;
+        let conn_for_unsubscribe = self.conn.clone();
+        let _: () = proxy
+            .call("Subscribe", &())
+            .await
+            .context("failed to subscribe manager for unit signals")?;
         let mut new_stream = proxy
             .receive_signal("UnitNew")
             .await
@@ -241,7 +247,7 @@ impl SystemdManager {
             .await
             .context("failed to subscribe UnitRemoved")?;
 
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1);
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -249,19 +255,32 @@ impl SystemdManager {
                         if msg.is_none() {
                             break;
                         }
-                        if tx.send(ManagerSignal::UnitNew).is_err() {
-                            break;
+                        match tx.try_send(ManagerSignal::UnitNew) {
+                            Ok(()) | Err(TrySendError::Full(_)) => {}
+                            Err(TrySendError::Closed(_)) => break,
                         }
                     }
                     msg = removed_stream.next() => {
                         if msg.is_none() {
                             break;
                         }
-                        if tx.send(ManagerSignal::UnitRemoved).is_err() {
-                            break;
+                        match tx.try_send(ManagerSignal::UnitRemoved) {
+                            Ok(()) | Err(TrySendError::Full(_)) => {}
+                            Err(TrySendError::Closed(_)) => break,
                         }
                     }
                 }
+            }
+
+            if let Ok(proxy) = zbus::Proxy::new(
+                &conn_for_unsubscribe,
+                "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1",
+                "org.freedesktop.systemd1.Manager",
+            )
+            .await
+            {
+                let _ = proxy.call::<_, _, ()>("Unsubscribe", &()).await;
             }
         });
         Ok(rx)
