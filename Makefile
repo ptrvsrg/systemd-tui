@@ -101,8 +101,16 @@ release/deps-snapcraft: ## Ensure snapcraft is installed.
 		exit 1; \
 	}
 
+.PHONY: release/deps-syft
+release/deps-syft: ## Ensure syft is installed.
+	@command -v syft >/dev/null 2>&1 || { \
+		echo "syft is required by GoReleaser (sboms section)."; \
+		echo "Install it manually (e.g. brew install syft)."; \
+		exit 1; \
+	}
+
 .PHONY: release/deps
-release/deps: release/deps-zigbuild release/deps-snapcraft ## Ensure release dependencies are installed (zig + cargo-zigbuild + snapcraft).
+release/deps: release/deps-zigbuild release/deps-snapcraft release/deps-syft ## Ensure release dependencies are installed (zig + cargo-zigbuild + snapcraft + syft).
 
 .PHONY: release/check
 release/check: ## Validate GoReleaser configuration.

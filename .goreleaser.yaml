@@ -14,9 +14,9 @@ builds:
     targets:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
+      - x86_64-pc-windows-gnu
       - x86_64-apple-darwin
       - aarch64-apple-darwin
-      - x86_64-pc-windows-gnu
     flags:
       - --release
 
@@ -70,6 +70,8 @@ nfpms:
 
 snapcrafts:
   - id: systemd-tui
+    ids:
+      - systemd-tui
     name: systemd-tui
     summary: Interactive systemd terminal UI
     description: Interactive TUI utility for managing systemd units over D-Bus.
@@ -93,6 +95,14 @@ homebrew_casks:
     homepage: https://github.com/ptrvsrg/systemd-tui
     description: Interactive TUI for systemd over D-Bus
     license: Apache-2.0
+
+sboms:
+  - id: archive
+    artifacts: archive
+  - id: package
+    artifacts: package
+  - id: source
+    artifacts: source
 
 changelog:
   use: git
