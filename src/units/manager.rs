@@ -5,8 +5,9 @@ use futures::StreamExt;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
+use zbus::Connection;
+use zbus::connection::Builder as ConnectionBuilder;
 use zbus::zvariant::OwnedObjectPath;
-use zbus::{Connection, ConnectionBuilder};
 
 type ListUnitsRow = (
     String,
