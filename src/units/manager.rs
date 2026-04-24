@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use std::process::Stdio;
 use std::time::Duration;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::process::Command;
 use zbus::Connection;
 use zbus::connection::Builder as ConnectionBuilder;
 use zbus::zvariant::OwnedObjectPath;
@@ -249,14 +249,20 @@ impl SystemdManager {
     pub async fn unit_logs(&self, unit_name: &str, limit: usize) -> Result<Vec<String>> {
         let args = self.journalctl_args(unit_name, limit);
         let output = match &self.ssh_config {
-            Some(ssh_config) => self.run_remote_command(ssh_config, "journalctl", &args).await?,
+            Some(ssh_config) => {
+                self.run_remote_command(ssh_config, "journalctl", &args)
+                    .await?
+            }
             None => self.run_local_command("journalctl", &args).await?,
         };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let error_message = if stderr.is_empty() {
-                format!("journalctl failed for {unit_name} with status {}", output.status)
+                format!(
+                    "journalctl failed for {unit_name} with status {}",
+                    output.status
+                )
             } else {
                 format!("journalctl failed for {unit_name}: {stderr}")
             };
