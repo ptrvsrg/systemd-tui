@@ -5,6 +5,8 @@
 It is built in Rust and provides a keyboard-driven workflow for listing units, filtering by name/state,
 and running actions like start, stop, restart, and reload.
 
+![](assets/screenshot.png)
+
 ## Install
 
 ### Linux
