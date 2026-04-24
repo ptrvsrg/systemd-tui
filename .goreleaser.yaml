@@ -47,7 +47,7 @@ dockers_v2:
       - "ghcr.io/ptrvsrg/systemd-tui"
     tags:
       - "{{ .Version }}"
-      - "latest"
+      - "{{ if eq .Prerelease \"\" }}latest{{ end }}"
     platforms:
       - linux/amd64
       - linux/arm64
