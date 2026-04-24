@@ -1,4 +1,4 @@
-use crate::app::{App, FocusBlock};
+use crate::app::{App, FocusBlock, LayoutMode};
 use crate::ui::units_list::units_table;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -7,19 +7,14 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, TableState, Wrap};
 
 pub mod units_list;
 
-pub fn draw(frame: &mut Frame<'_>, app: &App, table_state: &mut TableState) {
-    let chunks = Layout::default()
+pub fn draw(frame: &mut Frame<'_>, app: &mut App, table_state: &mut TableState) {
+    let root_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(5),
-            Constraint::Length(5),
-            Constraint::Length(5),
-        ])
+        .constraints([Constraint::Length(2), Constraint::Min(5)])
         .split(frame.area());
 
     let title = Paragraph::new(format!(
-        " systemd-tui  conn:{}  units:{}  state:{}  filter:{}{} ",
+        " systemd-tui  conn:{}  units:{}  state:{}  filter:{}{}  focus:{}  layout:{} \n updated:{}  status:{} ",
         app.connection_label(),
         app.units.len(),
         app.state_filter_label(),
@@ -33,6 +28,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, table_state: &mut TableState) {
         } else {
             ""
         },
+        app.focus_block().label(),
+        app.layout_mode().label(),
+        app.last_updated_at(),
+        app.status(),
     ))
     .style(
         Style::default()
@@ -40,13 +39,37 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, table_state: &mut TableState) {
             .bg(app.config.colors.header_bg)
             .add_modifier(Modifier::BOLD),
     );
-    frame.render_widget(title, chunks[0]);
+    frame.render_widget(title, root_chunks[0]);
+
+    let content_chunks = match app.layout_mode() {
+        LayoutMode::Horizontal => Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .split(root_chunks[1]),
+        LayoutMode::Vertical => Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(root_chunks[1]),
+    };
 
     let table = units_table(app, table_state, app.focus_block() == FocusBlock::Units);
-    frame.render_stateful_widget(table, chunks[1], table_state);
+    frame.render_stateful_widget(table, content_chunks[0], table_state);
+
+    draw_right_panel(frame, app, content_chunks[1]);
+
+    if app.show_help() {
+        draw_help_popup(frame, app);
+    }
+}
+
+fn draw_right_panel(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let panel_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(9), Constraint::Min(8)])
+        .split(area);
 
     let detail_lines = app.details_lines();
-    let detail_height = chunks[2].height.saturating_sub(2) as usize;
+    let detail_height = panel_chunks[0].height.saturating_sub(2) as usize;
     let detail_max_scroll = detail_lines.len().saturating_sub(detail_height) as u16;
     let detail_scroll = app.details_scroll().min(detail_max_scroll);
     let detail_title = if app.focus_block() == FocusBlock::Details {
@@ -61,29 +84,31 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, table_state: &mut TableState) {
         ))
         .scroll((detail_scroll, 0))
         .wrap(Wrap { trim: true });
-    frame.render_widget(detail_widget, chunks[2]);
+    frame.render_widget(detail_widget, panel_chunks[0]);
 
-    let status_lines = app.status_lines();
-    let status_height = chunks[3].height.saturating_sub(2) as usize;
-    let status_max_scroll = status_lines.len().saturating_sub(status_height) as u16;
-    let status_scroll = app.status_scroll().min(status_max_scroll);
-    let status_title = if app.focus_block() == FocusBlock::Status {
-        format!("Status * {status_scroll}/{status_max_scroll}")
+    let logs_height = panel_chunks[1].height.saturating_sub(2) as usize;
+    let logs_max_scroll = app.logs_lines().len().saturating_sub(logs_height) as u16;
+    app.update_logs_max_scroll_hint(logs_max_scroll);
+    let logs_scroll = app.effective_logs_scroll(logs_max_scroll);
+    let logs_title = if app.focus_block() == FocusBlock::Logs {
+        format!(
+            "Logs * {logs_scroll}/{logs_max_scroll}{}",
+            if app.logs_follow() { " [follow]" } else { "" }
+        )
     } else {
-        format!("Status {status_scroll}/{status_max_scroll}")
+        format!(
+            "Logs {logs_scroll}/{logs_max_scroll}{}",
+            if app.logs_follow() { " [follow]" } else { "" }
+        )
     };
-    let footer = Paragraph::new(status_lines.join("\n"))
+    let logs_widget = Paragraph::new(app.logs_lines().join("\n"))
         .block(styled_block(
-            status_title,
-            app.focus_block() == FocusBlock::Status,
+            logs_title,
+            app.focus_block() == FocusBlock::Logs,
         ))
-        .scroll((status_scroll, 0))
+        .scroll((logs_scroll, 0))
         .wrap(Wrap { trim: true });
-    frame.render_widget(footer, chunks[3]);
-
-    if app.show_help() {
-        draw_help_popup(frame, app);
-    }
+    frame.render_widget(logs_widget, panel_chunks[1]);
 }
 
 fn draw_help_popup(frame: &mut Frame<'_>, app: &App) {
@@ -95,8 +120,8 @@ fn draw_help_popup(frame: &mut Frame<'_>, app: &App) {
         "",
         "Navigation:",
         "  Tab / Shift+Tab Focus next/prev block",
-        "  ↑/k, ↓/j      Move selection",
-        "  g / G          First / last unit",
+        "  ↑/k, ↓/j      Scroll focused block",
+        "  g / G          Top / bottom of focused block",
         "",
         "Unit actions (selected unit):",
         "  s              Start",
@@ -108,6 +133,7 @@ fn draw_help_popup(frame: &mut Frame<'_>, app: &App) {
         "Filtering:",
         "  /              Name filter input mode",
         "  F2             Cycle state filter (all/active/inactive/failed)",
+        "  F3             Toggle horizontal / vertical layout",
         "",
         "General:",
         "  h / F1         Toggle this help",

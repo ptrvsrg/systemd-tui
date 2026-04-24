@@ -9,6 +9,9 @@ use ratatui::widgets::TableState;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+const LOGS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const LOGS_LINE_LIMIT: usize = 200;
+
 pub struct App {
     manager: SystemdManager,
     signal_rx: mpsc::Receiver<ManagerSignal>,
@@ -20,12 +23,20 @@ pub struct App {
     filter_input_mode: bool,
     state_filter: StateFilter,
     last_refresh: Instant,
+    last_updated_at: String,
     status: String,
     show_help: bool,
     help_scroll: u16,
     focus_block: FocusBlock,
+    layout_mode: LayoutMode,
     details_scroll: u16,
-    status_scroll: u16,
+    logs_lines: Vec<String>,
+    logs_scroll: u16,
+    logs_max_scroll_hint: u16,
+    logs_follow: bool,
+    logged_unit_name: Option<String>,
+    last_logs_refresh: Instant,
+    logs_dirty: bool,
     should_quit: bool,
 }
 
@@ -41,23 +52,29 @@ pub enum StateFilter {
 pub enum FocusBlock {
     Units,
     Details,
-    Status,
+    Logs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutMode {
+    Horizontal,
+    Vertical,
 }
 
 impl FocusBlock {
     fn next(self) -> Self {
         match self {
             Self::Units => Self::Details,
-            Self::Details => Self::Status,
-            Self::Status => Self::Units,
+            Self::Details => Self::Logs,
+            Self::Logs => Self::Units,
         }
     }
 
     fn prev(self) -> Self {
         match self {
-            Self::Units => Self::Status,
+            Self::Units => Self::Logs,
             Self::Details => Self::Units,
-            Self::Status => Self::Details,
+            Self::Logs => Self::Details,
         }
     }
 
@@ -65,7 +82,23 @@ impl FocusBlock {
         match self {
             Self::Units => "units",
             Self::Details => "details",
-            Self::Status => "status",
+            Self::Logs => "logs",
+        }
+    }
+}
+
+impl LayoutMode {
+    fn toggle(self) -> Self {
+        match self {
+            Self::Horizontal => Self::Vertical,
+            Self::Vertical => Self::Horizontal,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Horizontal => "horizontal",
+            Self::Vertical => "vertical",
         }
     }
 }
@@ -105,15 +138,26 @@ impl App {
             filter_input_mode: false,
             state_filter: StateFilter::All,
             last_refresh: Instant::now() - Duration::from_secs(10),
+            last_updated_at: "-".to_string(),
             status: "Ready".to_string(),
             show_help: false,
             help_scroll: 0,
             focus_block: FocusBlock::Units,
+            layout_mode: LayoutMode::Horizontal,
             details_scroll: 0,
-            status_scroll: 0,
+            logs_lines: vec!["Loading logs...".to_string()],
+            logs_scroll: 0,
+            logs_max_scroll_hint: 0,
+            logs_follow: true,
+            logged_unit_name: None,
+            last_logs_refresh: Instant::now() - LOGS_REFRESH_INTERVAL,
+            logs_dirty: true,
             should_quit: false,
         };
         app.refresh_units().await?;
+        if let Err(err) = app.refresh_logs().await {
+            app.status = format!("logs refresh error: {err}");
+        }
         Ok(app)
     }
 
@@ -136,6 +180,12 @@ impl App {
                 && let Err(err) = self.refresh_units().await
             {
                 self.status = format!("refresh error: {err}");
+            }
+
+            if self.should_refresh_logs()
+                && let Err(err) = self.refresh_logs().await
+            {
+                self.status = format!("logs refresh error: {err}");
             }
 
             terminal.draw(|frame| ui::draw(frame, self, &mut table_state))?;
@@ -208,12 +258,28 @@ impl App {
         self.focus_block
     }
 
+    pub fn layout_mode(&self) -> LayoutMode {
+        self.layout_mode
+    }
+
     pub fn details_scroll(&self) -> u16 {
         self.details_scroll
     }
 
-    pub fn status_scroll(&self) -> u16 {
-        self.status_scroll
+    pub fn logs_follow(&self) -> bool {
+        self.logs_follow
+    }
+
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    pub fn last_updated_at(&self) -> &str {
+        &self.last_updated_at
+    }
+
+    pub fn logs_lines(&self) -> &[String] {
+        &self.logs_lines
     }
 
     pub fn details_lines(&self) -> Vec<String> {
@@ -239,22 +305,17 @@ impl App {
         }
     }
 
-    pub fn status_lines(&self) -> Vec<String> {
-        vec![
-            format!("Status: {}", self.status),
-            format!(
-                "Focus: {} (Tab/Shift+Tab to switch)",
-                self.focus_block.label()
-            ),
-            format!(
-                "Filters: state={}, name='{}'",
-                self.state_filter.label(),
-                self.name_filter
-            ),
-            format!(
-                "Keys: ↑/↓ or j/k scroll focused block, PgUp/PgDn faster, g/G top-bottom, / filter, F2 state, s/t/R/L actions"
-            ),
-        ]
+    pub fn effective_logs_scroll(&self, max_scroll: u16) -> u16 {
+        Self::effective_logs_scroll_for(self.logs_scroll, self.logs_follow, max_scroll)
+    }
+
+    pub fn update_logs_max_scroll_hint(&mut self, max_scroll: u16) {
+        self.logs_max_scroll_hint = max_scroll;
+        if self.logs_follow {
+            self.logs_scroll = max_scroll;
+        } else {
+            self.logs_scroll = self.logs_scroll.min(max_scroll);
+        }
     }
 
     async fn refresh_units(&mut self) -> Result<()> {
@@ -271,7 +332,8 @@ impl App {
             );
         }
         self.last_refresh = Instant::now();
-        self.status = format!("updated at {}", chrono::Local::now().format("%H:%M:%S"));
+        self.last_updated_at = chrono::Local::now().format("%H:%M:%S").to_string();
+        self.logs_dirty = true;
         Ok(())
     }
 
@@ -284,6 +346,7 @@ impl App {
             return self.on_filter_input_key(key);
         }
 
+        let previous_selected_name = self.selected_unit_name();
         match key {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('h') | KeyCode::F(1) => {
@@ -292,6 +355,10 @@ impl App {
             }
             KeyCode::Tab => self.focus_block = self.focus_block.next(),
             KeyCode::BackTab => self.focus_block = self.focus_block.prev(),
+            KeyCode::F(3) => {
+                self.layout_mode = self.layout_mode.toggle();
+                self.status = format!("layout: {}", self.layout_mode.label());
+            }
             KeyCode::Down | KeyCode::Char('j') => self.scroll_focused_down(1),
             KeyCode::Up | KeyCode::Char('k') => self.scroll_focused_up(1),
             KeyCode::PageDown => self.scroll_focused_down(8),
@@ -354,6 +421,7 @@ impl App {
             }
             _ => {}
         }
+        self.mark_logs_dirty_on_selection_change(previous_selected_name);
         Ok(())
     }
 
@@ -404,6 +472,7 @@ impl App {
     }
 
     fn on_filter_input_key(&mut self, key: KeyCode) -> Result<()> {
+        let previous_selected_name = self.selected_unit_name();
         match key {
             KeyCode::Esc | KeyCode::Enter => {
                 self.filter_input_mode = false;
@@ -419,7 +488,62 @@ impl App {
             }
             _ => {}
         }
+        self.mark_logs_dirty_on_selection_change(previous_selected_name);
         Ok(())
+    }
+
+    async fn refresh_logs(&mut self) -> Result<()> {
+        let selected_name = self.selected_unit_name();
+        let selected_changed = selected_name != self.logged_unit_name;
+
+        self.logs_lines = match selected_name.as_deref() {
+            Some(unit_name) => {
+                let logs = self.manager.unit_logs(unit_name, LOGS_LINE_LIMIT).await?;
+                if logs.is_empty() {
+                    vec!["No logs found".to_string()]
+                } else {
+                    logs
+                }
+            }
+            None => vec!["No unit selected".to_string()],
+        };
+
+        if selected_changed {
+            self.details_scroll = 0;
+            self.logs_follow = true;
+            self.logs_scroll = self.logs_max_scroll_hint;
+        } else if self.logs_follow {
+            self.logs_scroll = self.logs_max_scroll_hint;
+        }
+
+        self.logged_unit_name = selected_name;
+        self.last_logs_refresh = Instant::now();
+        self.logs_dirty = false;
+        Ok(())
+    }
+
+    fn should_refresh_logs(&self) -> bool {
+        self.logs_dirty
+            || self.selected_unit_name_ref() != self.logged_unit_name.as_deref()
+            || (self.selected_unit().is_some()
+                && self.last_logs_refresh.elapsed() >= LOGS_REFRESH_INTERVAL)
+    }
+
+    fn selected_unit_name(&self) -> Option<String> {
+        self.selected_unit().map(|unit| unit.name.clone())
+    }
+
+    fn selected_unit_name_ref(&self) -> Option<&str> {
+        self.selected_unit().map(|unit| unit.name.as_str())
+    }
+
+    fn mark_logs_dirty_on_selection_change(&mut self, previous_selected_name: Option<String>) {
+        if previous_selected_name != self.selected_unit_name() {
+            self.details_scroll = 0;
+            self.logs_follow = true;
+            self.logs_scroll = self.logs_max_scroll_hint;
+            self.logs_dirty = true;
+        }
     }
 
     fn rebuild_filtered_indices(&mut self) {
@@ -464,6 +588,14 @@ impl App {
         }
     }
 
+    fn effective_logs_scroll_for(logs_scroll: u16, logs_follow: bool, max_scroll: u16) -> u16 {
+        if logs_follow {
+            max_scroll
+        } else {
+            logs_scroll.min(max_scroll)
+        }
+    }
+
     fn restore_selected_index_for_name(
         units: &[SystemdUnit],
         filtered_indices: &[usize],
@@ -494,8 +626,16 @@ impl App {
             FocusBlock::Details => {
                 self.details_scroll = self.details_scroll.saturating_add(amount as u16);
             }
-            FocusBlock::Status => {
-                self.status_scroll = self.status_scroll.saturating_add(amount as u16);
+            FocusBlock::Logs => {
+                if self.logs_follow {
+                    self.logs_scroll = self.logs_max_scroll_hint;
+                } else {
+                    self.logs_scroll = self.logs_scroll.saturating_add(amount as u16);
+                    if self.logs_scroll >= self.logs_max_scroll_hint {
+                        self.logs_follow = true;
+                        self.logs_scroll = self.logs_max_scroll_hint;
+                    }
+                }
             }
         }
     }
@@ -508,8 +648,12 @@ impl App {
             FocusBlock::Details => {
                 self.details_scroll = self.details_scroll.saturating_sub(amount as u16);
             }
-            FocusBlock::Status => {
-                self.status_scroll = self.status_scroll.saturating_sub(amount as u16);
+            FocusBlock::Logs => {
+                if self.logs_follow {
+                    self.logs_scroll = self.logs_max_scroll_hint;
+                }
+                self.logs_follow = false;
+                self.logs_scroll = self.logs_scroll.saturating_sub(amount as u16);
             }
         }
     }
@@ -518,7 +662,10 @@ impl App {
         match self.focus_block {
             FocusBlock::Units => self.selected = 0,
             FocusBlock::Details => self.details_scroll = 0,
-            FocusBlock::Status => self.status_scroll = 0,
+            FocusBlock::Logs => {
+                self.logs_follow = false;
+                self.logs_scroll = 0;
+            }
         }
     }
 
@@ -530,14 +677,17 @@ impl App {
                 }
             }
             FocusBlock::Details => self.details_scroll = u16::MAX,
-            FocusBlock::Status => self.status_scroll = u16::MAX,
+            FocusBlock::Logs => {
+                self.logs_follow = true;
+                self.logs_scroll = self.logs_max_scroll_hint;
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{App, FocusBlock, StateFilter};
+    use super::{App, FocusBlock, LayoutMode, StateFilter};
     use crate::units::SystemdUnit;
     use crate::units::structs::{UnitActiveState, UnitLoadState};
 
@@ -570,14 +720,23 @@ mod tests {
     fn focus_block_next_prev_roundtrip() {
         let units = FocusBlock::Units;
         let details = units.next();
-        let status = details.next();
+        let logs = details.next();
         assert_eq!(details, FocusBlock::Details);
-        assert_eq!(status, FocusBlock::Status);
-        assert_eq!(status.next(), FocusBlock::Units);
+        assert_eq!(logs, FocusBlock::Logs);
+        assert_eq!(logs.next(), FocusBlock::Units);
 
-        assert_eq!(FocusBlock::Units.prev(), FocusBlock::Status);
-        assert_eq!(FocusBlock::Status.prev(), FocusBlock::Details);
+        assert_eq!(FocusBlock::Units.prev(), FocusBlock::Logs);
+        assert_eq!(FocusBlock::Logs.prev(), FocusBlock::Details);
         assert_eq!(FocusBlock::Details.prev(), FocusBlock::Units);
+    }
+
+    #[test]
+    fn layout_mode_toggle_roundtrip() {
+        let mut layout = LayoutMode::Horizontal;
+        layout = layout.toggle();
+        assert_eq!(layout, LayoutMode::Vertical);
+        layout = layout.toggle();
+        assert_eq!(layout, LayoutMode::Horizontal);
     }
 
     #[test]
@@ -660,5 +819,26 @@ mod tests {
         let selected =
             App::restore_selected_index_for_name(&units, &filtered_indices, "missing.service", 3);
         assert_eq!(selected, 1);
+    }
+
+    #[test]
+    fn effective_logs_scroll_tracks_follow_mode() {
+        assert_eq!(App::effective_logs_scroll_for(3, false, 10), 3);
+        assert_eq!(App::effective_logs_scroll_for(30, false, 10), 10);
+        assert_eq!(App::effective_logs_scroll_for(0, true, 10), 10);
+    }
+
+    #[test]
+    fn update_logs_max_scroll_hint_normalizes_scroll() {
+        let mut scroll = 50u16;
+        let mut follow = false;
+        let max_scroll = 10u16;
+        let effective = App::effective_logs_scroll_for(scroll, follow, max_scroll);
+        assert_eq!(effective, 10);
+
+        scroll = scroll.min(max_scroll);
+        follow = true;
+        let effective = App::effective_logs_scroll_for(scroll, follow, max_scroll);
+        assert_eq!(effective, 10);
     }
 }
