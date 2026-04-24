@@ -1,10 +1,12 @@
-use crate::bus::{BusKind, BusSelection, ConnectionConfig, SshTunnel};
+use crate::bus::{BusKind, BusSelection, ConnectionConfig, SshConfig, SshTunnel};
 use crate::units::structs::{SystemdUnit, UnitActiveState, UnitLoadState};
 use anyhow::{Context, Result};
 use futures::StreamExt;
+use std::process::Stdio;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
+use tokio::process::Command;
 use zbus::Connection;
 use zbus::connection::Builder as ConnectionBuilder;
 use zbus::zvariant::OwnedObjectPath;
@@ -24,6 +26,9 @@ type ListUnitsRow = (
 
 pub struct SystemdManager {
     conn: Connection,
+    bus_kind: BusKind,
+    ssh_config: Option<SshConfig>,
+    command_timeout: Duration,
     connection_label: String,
     _ssh_tunnel: Option<SshTunnel>,
 }
@@ -81,6 +86,9 @@ impl SystemdManager {
 
         Ok(Self {
             conn,
+            bus_kind,
+            ssh_config: None,
+            command_timeout: timeout,
             connection_label: connection_label_for(bus_kind, None),
             _ssh_tunnel: None,
         })
@@ -115,6 +123,9 @@ impl SystemdManager {
 
         Ok(Self {
             conn,
+            bus_kind,
+            ssh_config: Some(ssh_config.clone()),
+            command_timeout: config.connect_timeout,
             connection_label: connection_label_for(bus_kind, Some(&ssh_config.host)),
             _ssh_tunnel: Some(ssh_tunnel),
         })
@@ -137,6 +148,9 @@ impl SystemdManager {
 
         Ok(Self {
             conn,
+            bus_kind,
+            ssh_config: None,
+            command_timeout: timeout,
             connection_label: connection_label_for(bus_kind, None),
             _ssh_tunnel: None,
         })
@@ -232,6 +246,27 @@ impl SystemdManager {
         Ok(())
     }
 
+    pub async fn unit_logs(&self, unit_name: &str, limit: usize) -> Result<Vec<String>> {
+        let args = self.journalctl_args(unit_name, limit);
+        let output = match &self.ssh_config {
+            Some(ssh_config) => self.run_remote_command(ssh_config, "journalctl", &args).await?,
+            None => self.run_local_command("journalctl", &args).await?,
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let error_message = if stderr.is_empty() {
+                format!("journalctl failed for {unit_name} with status {}", output.status)
+            } else {
+                format!("journalctl failed for {unit_name}: {stderr}")
+            };
+            return Err(anyhow::anyhow!(error_message));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout.lines().map(ToOwned::to_owned).collect())
+    }
+
     pub async fn subscribe_unit_signals(&self) -> Result<mpsc::Receiver<ManagerSignal>> {
         let proxy = self.proxy().await?;
         let conn_for_unsubscribe = self.conn.clone();
@@ -285,6 +320,70 @@ impl SystemdManager {
             }
         });
         Ok(rx)
+    }
+
+    fn journalctl_args(&self, unit_name: &str, limit: usize) -> Vec<String> {
+        let mut args = Vec::new();
+        if self.bus_kind == BusKind::Session {
+            args.push("--user".to_string());
+        }
+        args.extend([
+            "-u".to_string(),
+            unit_name.to_string(),
+            "-n".to_string(),
+            limit.to_string(),
+            "--no-pager".to_string(),
+            "-o".to_string(),
+            "short-iso".to_string(),
+        ]);
+        args
+    }
+
+    async fn run_local_command(
+        &self,
+        program: &str,
+        args: &[String],
+    ) -> Result<std::process::Output> {
+        let mut command = Command::new(program);
+        command.args(args).stdin(Stdio::null());
+        tokio::time::timeout(self.command_timeout, command.output())
+            .await
+            .with_context(|| format!("timeout running {program}"))?
+            .with_context(|| format!("failed to run {program}"))
+    }
+
+    async fn run_remote_command(
+        &self,
+        ssh_config: &SshConfig,
+        program: &str,
+        args: &[String],
+    ) -> Result<std::process::Output> {
+        let destination = match &ssh_config.user {
+            Some(user) => format!("{user}@{}", ssh_config.host),
+            None => ssh_config.host.clone(),
+        };
+
+        let mut command = Command::new("ssh");
+        command
+            .arg("-o")
+            .arg("BatchMode=yes")
+            .arg("-p")
+            .arg(ssh_config.port.to_string());
+        if let Some(key_path) = &ssh_config.key_path {
+            command.arg("-i").arg(key_path);
+        }
+        command
+            .arg(&destination)
+            .arg(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        tokio::time::timeout(self.command_timeout, command.output())
+            .await
+            .with_context(|| format!("timeout running remote {program} via ssh"))?
+            .with_context(|| format!("failed to run remote {program} via ssh"))
     }
 }
 
