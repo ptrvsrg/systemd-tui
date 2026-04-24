@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, TableState, Wrap};
 
 pub mod units_list;
 
-pub fn draw(frame: &mut Frame<'_>, app: &App, table_state: &mut TableState) {
+pub fn draw(frame: &mut Frame<'_>, app: &mut App, table_state: &mut TableState) {
     let root_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Min(5)])
@@ -62,7 +62,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App, table_state: &mut TableState) {
     }
 }
 
-fn draw_right_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn draw_right_panel(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let panel_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(9), Constraint::Min(8)])
@@ -88,6 +88,7 @@ fn draw_right_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     let logs_height = panel_chunks[1].height.saturating_sub(2) as usize;
     let logs_max_scroll = app.logs_lines().len().saturating_sub(logs_height) as u16;
+    app.update_logs_max_scroll_hint(logs_max_scroll);
     let logs_scroll = app.effective_logs_scroll(logs_max_scroll);
     let logs_title = if app.focus_block() == FocusBlock::Logs {
         format!(

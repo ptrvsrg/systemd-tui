@@ -351,7 +351,7 @@ impl SystemdManager {
         args: &[String],
     ) -> Result<std::process::Output> {
         let mut command = Command::new(program);
-        command.args(args).stdin(Stdio::null());
+        command.kill_on_drop(true).args(args).stdin(Stdio::null());
         tokio::time::timeout(self.command_timeout, command.output())
             .await
             .with_context(|| format!("timeout running {program}"))?
@@ -371,6 +371,7 @@ impl SystemdManager {
 
         let mut command = Command::new("ssh");
         command
+            .kill_on_drop(true)
             .arg("-o")
             .arg("BatchMode=yes")
             .arg("-p")

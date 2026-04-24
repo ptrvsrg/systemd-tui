@@ -32,6 +32,7 @@ pub struct App {
     details_scroll: u16,
     logs_lines: Vec<String>,
     logs_scroll: u16,
+    logs_max_scroll_hint: u16,
     logs_follow: bool,
     logged_unit_name: Option<String>,
     last_logs_refresh: Instant,
@@ -145,7 +146,8 @@ impl App {
             layout_mode: LayoutMode::Horizontal,
             details_scroll: 0,
             logs_lines: vec!["Loading logs...".to_string()],
-            logs_scroll: u16::MAX,
+            logs_scroll: 0,
+            logs_max_scroll_hint: 0,
             logs_follow: true,
             logged_unit_name: None,
             last_logs_refresh: Instant::now() - LOGS_REFRESH_INTERVAL,
@@ -305,6 +307,15 @@ impl App {
 
     pub fn effective_logs_scroll(&self, max_scroll: u16) -> u16 {
         Self::effective_logs_scroll_for(self.logs_scroll, self.logs_follow, max_scroll)
+    }
+
+    pub fn update_logs_max_scroll_hint(&mut self, max_scroll: u16) {
+        self.logs_max_scroll_hint = max_scroll;
+        if self.logs_follow {
+            self.logs_scroll = max_scroll;
+        } else {
+            self.logs_scroll = self.logs_scroll.min(max_scroll);
+        }
     }
 
     async fn refresh_units(&mut self) -> Result<()> {
@@ -500,9 +511,9 @@ impl App {
         if selected_changed {
             self.details_scroll = 0;
             self.logs_follow = true;
-            self.logs_scroll = u16::MAX;
+            self.logs_scroll = self.logs_max_scroll_hint;
         } else if self.logs_follow {
-            self.logs_scroll = u16::MAX;
+            self.logs_scroll = self.logs_max_scroll_hint;
         }
 
         self.logged_unit_name = selected_name;
@@ -530,7 +541,7 @@ impl App {
         if previous_selected_name != self.selected_unit_name() {
             self.details_scroll = 0;
             self.logs_follow = true;
-            self.logs_scroll = u16::MAX;
+            self.logs_scroll = self.logs_max_scroll_hint;
             self.logs_dirty = true;
         }
     }
@@ -616,8 +627,14 @@ impl App {
                 self.details_scroll = self.details_scroll.saturating_add(amount as u16);
             }
             FocusBlock::Logs => {
-                if !self.logs_follow {
+                if self.logs_follow {
+                    self.logs_scroll = self.logs_max_scroll_hint;
+                } else {
                     self.logs_scroll = self.logs_scroll.saturating_add(amount as u16);
+                    if self.logs_scroll >= self.logs_max_scroll_hint {
+                        self.logs_follow = true;
+                        self.logs_scroll = self.logs_max_scroll_hint;
+                    }
                 }
             }
         }
@@ -632,6 +649,9 @@ impl App {
                 self.details_scroll = self.details_scroll.saturating_sub(amount as u16);
             }
             FocusBlock::Logs => {
+                if self.logs_follow {
+                    self.logs_scroll = self.logs_max_scroll_hint;
+                }
                 self.logs_follow = false;
                 self.logs_scroll = self.logs_scroll.saturating_sub(amount as u16);
             }
@@ -659,7 +679,7 @@ impl App {
             FocusBlock::Details => self.details_scroll = u16::MAX,
             FocusBlock::Logs => {
                 self.logs_follow = true;
-                self.logs_scroll = u16::MAX;
+                self.logs_scroll = self.logs_max_scroll_hint;
             }
         }
     }
@@ -806,5 +826,19 @@ mod tests {
         assert_eq!(App::effective_logs_scroll_for(3, false, 10), 3);
         assert_eq!(App::effective_logs_scroll_for(30, false, 10), 10);
         assert_eq!(App::effective_logs_scroll_for(0, true, 10), 10);
+    }
+
+    #[test]
+    fn update_logs_max_scroll_hint_normalizes_scroll() {
+        let mut scroll = 50u16;
+        let mut follow = false;
+        let max_scroll = 10u16;
+        let effective = App::effective_logs_scroll_for(scroll, follow, max_scroll);
+        assert_eq!(effective, 10);
+
+        scroll = scroll.min(max_scroll);
+        follow = true;
+        let effective = App::effective_logs_scroll_for(scroll, follow, max_scroll);
+        assert_eq!(effective, 10);
     }
 }
