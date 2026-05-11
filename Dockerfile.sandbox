@@ -7,7 +7,7 @@ COPY src ./src
 RUN cargo build --release \
     && install -D /workspace/target/release/systemd-tui /usr/local/bin/systemd-tui
 
-FROM ubuntu:24.04 AS runtime
+FROM ubuntu:26.04 AS runtime
 
 ENV container=docker
 
