@@ -84,7 +84,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: GoReleaser Release
         if: steps.tag.outputs.is_rc == 'false'
-        uses: goreleaser/goreleaser-action@v7.2.1
+        uses: goreleaser/goreleaser-action@v7.2.2
         with:
           distribution: goreleaser
           version: "~> v2"
@@ -93,7 +93,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: GoReleaser Draft Release (RC)
         if: steps.tag.outputs.is_rc == 'true'
-        uses: goreleaser/goreleaser-action@v7.2.1
+        uses: goreleaser/goreleaser-action@v7.2.2
         with:
           distribution: goreleaser
           version: "~> v2"
