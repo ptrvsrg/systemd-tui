@@ -1,0 +1,33 @@
+name: Dependabot automerge
+
+on:
+  pull_request:
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+jobs:
+  dependabot-automerge:
+    name: Automerge Dependabot PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Wait for CI checks
+        uses: lewagon/wait-on-check-action@v1.8.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+          running-workflow-name: Automerge Dependabot PRs
+      - name: Enable PR automerge
+        uses: peter-evans/enable-pull-request-automerge@v3.0.0
+        with:
+          pull-request-number: ${{ github.event.pull_request.number }}
+          merge-method: squash
