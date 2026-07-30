@@ -27,7 +27,6 @@ jobs:
           wait-interval: 30
           running-workflow-name: Automerge Dependabot PRs
       - name: Enable PR automerge
-        uses: peter-evans/enable-pull-request-automerge@v3.0.0
-        with:
-          pull-request-number: ${{ github.event.pull_request.number }}
-          merge-method: squash
+        run: gh pr merge --squash --delete-branch "${{ github.event.pull_request.number }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
