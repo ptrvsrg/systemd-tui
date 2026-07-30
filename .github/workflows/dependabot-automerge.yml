@@ -26,6 +26,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 30
           running-workflow-name: Automerge Dependabot PRs
+          allowed-conclusions: success,skipped,cancelled
       - name: Enable PR automerge
         uses: peter-evans/enable-pull-request-automerge@v3.0.0
         with:
