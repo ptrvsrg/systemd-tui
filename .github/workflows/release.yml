@@ -57,7 +57,7 @@ jobs:
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
       - name: Setup syft
-        uses: anchore/sbom-action/download-syft@v0.24.0
+        uses: anchore/sbom-action/download-syft@v0.24.2
       - name: Install snapcraft
         run: |
           if command -v snapcraft >/dev/null 2>&1; then
